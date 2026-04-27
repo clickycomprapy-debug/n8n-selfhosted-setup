@@ -1,17 +1,24 @@
-Self-Hosted n8n with Traefik + Docker + Cloudflare
-> Production-ready n8n automation platform running on a hardened Ubuntu 24.04 VPS with Traefik as reverse proxy and Cloudflare for SSL termination.
-This setup powers True Recovery — a remote automation studio helping small and mid-sized businesses in Paraguay modernize their collections and operational workflows.
+# n8n Self-Hosted with Traefik + Docker + Cloudflare
+
+Production-ready n8n automation platform running on a hardened Ubuntu 24.04 VPS with Traefik as reverse proxy and Cloudflare for SSL termination. This setup powers True Recovery, a remote automation studio helping small and medium businesses in Paraguay modernize their operational and collections workflows.
+
 ---
-Stack
-Component	Version	Role
-Ubuntu	24.04.4 LTS	Host OS
-Docker	29.0.4	Container runtime
-Traefik	latest	Reverse proxy + routing
-n8n	latest	Workflow automation platform
-PostgreSQL	15	Persistent database for n8n
-Cloudflare	—	SSL termination + DDoS protection + DNS
+
+## Stack
+
+| Component | Version | Role |
+|-----------|---------|------|
+| Ubuntu | 24.04.4 LTS | Host OS |
+| Docker | 29.0.4 | Container runtime |
+| Traefik | latest | Reverse proxy + routing |
+| n8n | latest | Workflow automation platform |
+| PostgreSQL | 15 | Persistent database for n8n |
+| Cloudflare | — | SSL termination + DDoS protection + DNS |
+
 ---
-Architecture
+
+## Architecture
+
 ```
 Internet (HTTPS)
       │
@@ -19,6 +26,7 @@ Internet (HTTPS)
  Cloudflare
  ├─ SSL/TLS termination
  ├─ DDoS protection
+ ├─ WAF (country blocking + IP allowlist)
  └─ DNS proxy (orange cloud)
       │
       ▼ HTTP (internal — Cloudflare to server)
@@ -36,9 +44,13 @@ Internet (HTTPS)
  ├─ n8n (port 5678 internal only)
  └─ PostgreSQL 15 (port 5432 internal only)
 ```
-SSL strategy: Cloudflare handles TLS externally. The connection between Cloudflare and the server is HTTP — this is intentional. n8n is configured with `N8N_PROTOCOL=https` because from the end user's perspective, the connection is always HTTPS via Cloudflare. Port 5678 is blocked at the UFW level so n8n is never directly accessible — all traffic must go through Traefik.
+
+**SSL Strategy:** Cloudflare manages TLS externally. The connection between Cloudflare and the server is HTTP — this is intentional. n8n is configured with `N8N_PROTOCOL=https` because from the end user's perspective, the connection is always HTTPS through Cloudflare. Port 5678 is blocked at UFW level, so n8n is never directly accessible — all traffic must pass through Traefik.
+
 ---
-Project Structure
+
+## Project Structure
+
 ```
 /docker/
 ├── traefik/
@@ -48,9 +60,13 @@ Project Structure
 └── n8n-04wk/
     └── docker-compose.yml       # n8n + PostgreSQL stack
 ```
+
 ---
-Traefik Configuration
-docker-compose.yml
+
+## Traefik Configuration
+
+`docker-compose.yml`
+
 ```yaml
 services:
   traefik:
@@ -67,27 +83,36 @@ services:
       - --entrypoints.websecure.address=:443
       - --providers.file.directory=/config
       - --providers.file.watch=true
+      - --accesslog=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /docker/traefik/config:/config:ro
 ```
-Key decisions:
-`network_mode: host` — Traefik binds directly to the host network, required for routing to work cleanly with Docker services
-`api.dashboard=false` and `api.insecure=false` — Dashboard disabled in production
-`exposedbydefault=false` — No container is exposed unless it explicitly opts in via labels
-Docker socket mounted as read-only (`:ro`) — Traefik can watch Docker events but cannot modify containers
+
+**Key decisions:**
+- `network_mode: host` — Traefik binds directly to the host network, required for proper routing with Docker services
+- `api.dashboard=false` and `api.insecure=false` — dashboard disabled in production
+- `exposedbydefault=false` — no container is exposed unless it explicitly opts in via labels
+- Docker socket mounted read-only (`:ro`) — Traefik can observe Docker events but cannot modify containers
+- `--accesslog=true` — logs all incoming requests for monitoring and security analysis
+
 ---
-n8n + PostgreSQL Configuration
-docker-compose.yml
+
+## n8n + PostgreSQL Configuration
+
+`docker-compose.yml`
+
 ```yaml
 services:
   n8n:
     image: docker.n8n.io/n8nio/n8n
     restart: unless-stopped
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.n8n-04wk.rule=Host(`n8n.[YOUR-DOMAIN]`)
-      - traefik.http.routers.n8n-04wk.entrypoints=web
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n-04wk.rule=Host(`n8n.[YOUR-DOMAIN]`)"
+      - "traefik.http.routers.n8n-04wk.entrypoints=websecure"
+      - "traefik.http.routers.n8n-04wk.tls=true"
+      - "traefik.http.services.n8n-04wk.loadbalancer.server.port=5678"
     environment:
       - N8N_SECURE_COOKIE=true
       - GENERIC_TIMEZONE=America/Asuncion
@@ -122,38 +147,51 @@ volumes:
   n8n_data:
   postgres_data:
 ```
-Note: Sensitive values (JWT secret, DB credentials) are stored in a `.env` file that is never committed to version control. See `.env.example` below.
+
+**Note:** Sensitive values (JWT secret, database credentials) are stored in a `.env` file that is never included in version control. See `.env.example` below.
+
 ---
-Environment Variables
+
+## Environment Variables
+
 Create a `.env` file in the same directory as `docker-compose.yml`:
+
 ```bash
 # .env — never commit this file
-N8N_JWT_SECRET=your-long-random-secret-here
+N8N_JWT_SECRET=your-long-random-secret-here   # generate: openssl rand -base64 32
 DB_USER=n8n
-DB_PASSWORD=your-strong-db-password-here
+DB_PASSWORD=your-strong-db-password-here       # generate: openssl rand -base64 32
 ```
-.env.example (safe to commit)
+
+`.env.example` (safe to commit)
+
 ```bash
 # Copy this to .env and fill in your values
 N8N_JWT_SECRET=
 DB_USER=n8n
 DB_PASSWORD=
 ```
-.gitignore
+
+`.gitignore`
+
 ```
 .env
 *.env
 ```
+
 ---
-Deployment
-Prerequisites
-Ubuntu 24.04 server with Docker installed
-Domain pointed to your server via Cloudflare (proxy enabled — orange cloud)
-UFW configured (ports 80, 443 open — port 5678 denied)
-SSH access configured (see linux-server-hardening)
-Steps
+
+## Deployment Prerequisites
+
+- Ubuntu 24.04 server with Docker installed
+- Domain pointing to your server via Cloudflare (proxy enabled — orange cloud)
+- UFW configured (ports 80, 443 open — port 5678 denied)
+- SSH access configured (see linux-server-hardening)
+
+## Steps
+
 ```bash
-# 1. Clone or create directory structure
+# 1. Create directory structure
 mkdir -p /docker/traefik/config
 mkdir -p /docker/n8n-04wk
 
@@ -169,7 +207,7 @@ docker compose up -d
 cd /docker/n8n-04wk
 cp .env.example .env
 nano .env
-# (fill in your values)
+# (fill in your values — use openssl rand -base64 32 for secrets)
 
 # 5. Start n8n + PostgreSQL
 docker compose up -d
@@ -177,7 +215,11 @@ docker compose up -d
 # 6. Verify all containers running
 docker ps
 ```
-Verify deployment
+
+---
+
+## Verify Deployment
+
 ```bash
 # All 3 containers should be running
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -188,19 +230,34 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 # postgres_n8n_prod      Up X days    5432/tcp
 
 # Note: 5678 shows as internal only — not published to host
+
+# Verify HTTPS and security headers
+curl -I https://n8n.[YOUR-DOMAIN]
 ```
+
 ---
-Security Considerations
-Control	Implementation
-n8n not directly exposed	Port 5678 denied at UFW level
-No default container exposure	`exposedbydefault=false` in Traefik
-Read-only Docker socket	`:ro` mount prevents container modification
-Secrets not in compose file	`.env` file excluded from version control
-Dashboard disabled	`api.dashboard=false`
-SSL/TLS	Cloudflare Full mode
-Database not exposed	No `ports:` mapping on PostgreSQL
+
+## Security Considerations
+
+| Control | Implementation |
+|---------|---------------|
+| n8n not directly exposed | Port 5678 denied at UFW level |
+| No default container exposure | `exposedbydefault=false` in Traefik |
+| Docker socket read-only | `:ro` mount prevents container modification |
+| Secrets not in compose | `.env` file excluded from version control |
+| Dashboard disabled | `api.dashboard=false` |
+| SSL/TLS | Cloudflare Full mode |
+| Database not exposed | No `ports:` mapping on PostgreSQL |
+| Secure cookies | `N8N_SECURE_COOKIE=true` |
+| Strong secrets | JWT and DB password generated with `openssl rand -base64 32` |
+| HTTP security headers | X-Frame-Options, HSTS, nosniff via Traefik middleware |
+| Cloudflare WAF | Country blocking + IP allowlist for n8n subdomain |
+| Access logging | `--accesslog=true` in Traefik for traffic monitoring |
+
 ---
-Useful Commands
+
+## Useful Commands
+
 ```bash
 # View running containers
 docker ps
@@ -208,7 +265,7 @@ docker ps
 # View n8n logs
 docker logs n8n-04wk-n8n-1 --tail 50 -f
 
-# View Traefik logs
+# View Traefik logs (access log)
 docker logs traefik-traefik-1 --tail 50 -f
 
 # View PostgreSQL logs
@@ -225,36 +282,86 @@ docker system df
 
 # Clean unused images/containers
 docker system prune -f
+
+# Update n8n to latest version
+cd /docker/n8n-04wk
+docker compose pull
+docker compose up -d
 ```
+
 ---
-Backup Strategy
-n8n data backup
+
+## Backup Strategy
+
+### n8n data backup
+
 ```bash
-# Backup n8n volume
-docker run --rm \
-  -v n8n_data:/data \
-  -v $(pwd):/backup \
-  ubuntu tar czf /backup/n8n_backup_$(date +%Y%m%d).tar.gz /data
-```
-PostgreSQL backup
-```bash
-# Dump PostgreSQL database
+# Manual backup
+tar -zcf n8n-backup-$(date +%F).tar.gz /var/lib/docker/volumes/n8n_data
+
+# PostgreSQL dump
 docker exec postgres_n8n_prod \
-  pg_dump -U n8n n8n > n8n_db_backup_$(date +%Y%m%d).sql
+  pg_dump -U n8n n8n > n8n_db_backup_$(date +%F).sql
 ```
+
+### Automated backups (cron — runs as root)
+
+```bash
+# n8n volume — 3am daily
+0 3 * * * tar -zcf /home/user/backups/n8n-backup-$(date +\%F).tar.gz /var/lib/docker/volumes/n8n_data
+
+# Docker config — 2am daily
+0 2 * * * tar -zcf /home/user/backups/docker-config-$(date +\%F).tar.gz /docker
+
+# Sync to Google Drive — 3:30am daily
+30 3 * * * rclone copy /home/user/backups/ gdrive:backups-server/
+
+# Clean backups older than 14 days
+0 5 * * * find /home/user/backups -name "*.tar.gz" -mtime +14 -delete
+```
+
+Backups follow the **3-2-1 rule** — 3 copies, 2 different media, 1 offsite (Google Drive).
+
 ---
-Work in Progress
-[ ] Automated daily backups with cron
-[ ] HTTP security headers middleware in Traefik
-[ ] Rate limiting middleware for public routes
-[ ] Monitoring with Wazuh or Uptime Kuma
-[ ] Staging environment for workflow testing
+
+## Current Status
+
+| Control | Status |
+|---------|--------|
+| n8n running | ✅ |
+| PostgreSQL running | ✅ |
+| Traefik routing | ✅ |
+| HTTPS active | ✅ Cloudflare |
+| Automated backups | ✅ Daily + Google Drive |
+| HTTP security headers | ✅ |
+| Cloudflare WAF | ✅ Country blocking + IP allowlist |
+| n8n auto-update | ✅ Weekly via cron |
+| Access logging | ✅ Traefik accesslog |
+| Secure cookies | ✅ |
+| Strong secrets | ✅ openssl rand -base64 32 |
+
 ---
-Related Repositories
-linux-server-hardening — Complete Ubuntu server hardening guide applied to this server
+
+## Work in Progress
+
+- [ ] mTLS implementation in Traefik for client certificate authentication
+- [ ] Rate limiting middleware for public-facing routes
+- [ ] Uptime monitoring integration
+- [ ] Staging environment for workflow testing
+
 ---
-About True Recovery
-True Recovery is a remote automation studio based in Paraguay, helping small and mid-sized businesses modernize their collections, customer communication, and operational workflows using n8n and the infrastructure documented in this repository.
+
+## Related Repositories
+
+- [linux-server-hardening](../linux-server-hardening) — Full Ubuntu server hardening guide applied to this server
+
 ---
-Maintained by Matheo M. | True Recovery | Paraguay
-Stack: Ubuntu 24.04 · Docker · Traefik · n8n · PostgreSQL · Cloudflare
+
+## About True Recovery
+
+True Recovery is a remote automation studio based in Paraguay, helping small and medium businesses modernize their collections, customer communication, and operational workflows using n8n and the infrastructure documented in this repository.
+
+---
+
+*Maintained by M.M. | True Recovery | Paraguay*
+*Stack: Ubuntu 24.04 · Docker · Traefik · n8n · PostgreSQL · Cloudflare*
