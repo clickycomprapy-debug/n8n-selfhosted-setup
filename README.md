@@ -348,7 +348,10 @@ Backups follow the **3-2-1 rule** — 3 copies, 2 different media, 1 offsite (Go
 - [ ] Rate limiting middleware for public-facing routes
 - [ ] Uptime monitoring integration
 - [ ] Staging environment for workflow testing
-
+## Recently completed
+- Cloudflare Access (Zero Trust) layer before n8n login
+- Automated health check with attacker geolocation
+- Google Drive backup sync via rclone
 ---
 
 ## Related Repositories
